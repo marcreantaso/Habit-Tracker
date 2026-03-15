@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
+import { GoogleGenAI } from "@google/genai";
 
 const techniques = [
   { rank: 1, name: "Deep Work Blocks", tagline: "90-min focus", effectiveness: 97, description: "Undivided work sessions. No distractions. One task only.", howTo: "Set a timer for 90 minutes. Work on one task. Do not stop until the timer ends.", scienceBit: "Ultradian rhythms: brain focus cycles.", color: "#000" },
@@ -65,14 +66,74 @@ export default function App() {
     return c;
   });
 
+  // Timer State
+  const [timerActive, setTimerActive] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(90 * 60); // 90 minutes default
+  const [totalTime, setTotalTime] = useState(90 * 60);
+  const [focusGoal, setFocusGoal] = useState("");
+
+  // Chat State
+  const [messages, setMessages] = useState<{ role: "user" | "ai"; text: string }[]>([
+    { role: "ai", text: "I am your Focus Coach. Need a custom recommendation or help with a block?" }
+  ]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let interval: any;
+    if (timerActive && timeLeft > 0) {
+      interval = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
+    } else if (timeLeft === 0) {
+      setTimerActive(false);
+      alert("Focus session complete.");
+    }
+    return () => clearInterval(interval);
+  }, [timerActive, timeLeft]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
   const toggle = (d: string, h: string) => setChecks(p => ({ ...p, [d]: { ...p[d], [h]: !p[d][h] } }));
   const score = (d: string) => Math.round(Object.values(checks[d]).filter(Boolean).length / HABITS_TRACK.length * 100);
+
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s < 10 ? "0" : ""}${s}`;
+  };
+
+  const handleChat = async () => {
+    if (!input.trim() || loading) return;
+    const userMsg = input.trim();
+    setInput("");
+    setMessages(prev => [...prev, { role: "user", text: userMsg }]);
+    setLoading(true);
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: userMsg,
+        config: {
+          systemInstruction: "You are a minimalist productivity coach. Give short, punchy, actionable advice. Focus on deep work, habit building, and distraction elimination. Keep responses under 3 sentences. Use a direct, slightly stoic tone.",
+        },
+      });
+      setMessages(prev => [...prev, { role: "ai", text: response.text || "I'm offline. Focus on the work." }]);
+    } catch (e) {
+      setMessages(prev => [...prev, { role: "ai", text: "Error connecting to coach. Trust the system." }]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const TABS = [
     { id: "techniques", label: "TECH" },
     { id: "schedule",   label: "TIME" },
     { id: "habits",     label: "HABIT" },
     { id: "tracker",    label: "TRACK" },
+    { id: "coach",      label: "COACH" },
   ];
 
   return (
@@ -81,7 +142,9 @@ export default function App() {
       background: "#fff", 
       color: "#000", 
       fontFamily: "system-ui, -apple-system, sans-serif", 
-      padding: "env(safe-area-inset-top) 0 env(safe-area-inset-bottom) 0" 
+      padding: "env(safe-area-inset-top) 0 env(safe-area-inset-bottom) 0",
+      display: "flex",
+      flexDirection: "column"
     }}>
       
       {/* HEADER */}
@@ -114,7 +177,7 @@ export default function App() {
         ))}
       </nav>
 
-      <main style={{ padding: "24px 20px" }}>
+      <main style={{ flex: 1, padding: "24px 20px", overflowY: "auto" }}>
         
         {tab === "techniques" && (
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
@@ -153,6 +216,86 @@ export default function App() {
 
         {tab === "schedule" && (
           <div>
+            {/* FOCUS GOAL */}
+            <div style={{ marginBottom: "24px" }}>
+              <p style={{ fontSize: "10px", fontWeight: "700", color: "#aaa", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>Current Objective</p>
+              <input 
+                value={focusGoal}
+                onChange={(e) => setFocusGoal(e.target.value)}
+                placeholder="What is the ONE thing?"
+                style={{
+                  width: "100%",
+                  padding: "12px 0",
+                  fontSize: "18px",
+                  fontWeight: "600",
+                  border: "none",
+                  borderBottom: "2px solid #eee",
+                  outline: "none",
+                  background: "transparent",
+                  transition: "border-color 0.2s"
+                }}
+                onFocus={(e) => e.target.style.borderColor = "#000"}
+                onBlur={(e) => e.target.style.borderColor = "#eee"}
+              />
+            </div>
+
+            {/* TIMER SECTION */}
+            <div style={{ marginBottom: "32px", padding: "24px", border: "1px solid #000", borderRadius: "12px", textAlign: "center", position: "relative", overflow: "hidden" }}>
+              {/* Progress Bar Background */}
+              <div style={{ 
+                position: "absolute", 
+                bottom: 0, 
+                left: 0, 
+                height: "4px", 
+                background: "#eee", 
+                width: "100%" 
+              }} />
+              {/* Progress Bar Fill */}
+              <div style={{ 
+                position: "absolute", 
+                bottom: 0, 
+                left: 0, 
+                height: "4px", 
+                background: "#000", 
+                width: `${((totalTime - timeLeft) / totalTime) * 100}%`,
+                transition: "width 1s linear"
+              }} />
+
+              <div style={{ fontSize: "48px", fontWeight: "800", fontFamily: "monospace", letterSpacing: "-2px", marginBottom: "12px" }}>
+                {formatTime(timeLeft)}
+              </div>
+              <div style={{ display: "flex", gap: "8px", justifyContent: "center" }}>
+                <button 
+                  onClick={() => setTimerActive(!timerActive)}
+                  style={{
+                    padding: "10px 24px",
+                    background: "#000",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: "20px",
+                    fontSize: "13px",
+                    fontWeight: "700"
+                  }}
+                >
+                  {timerActive ? "PAUSE" : "START BLOCK"}
+                </button>
+                <button 
+                  onClick={() => { setTimerActive(false); setTimeLeft(90 * 60); setTotalTime(90 * 60); }}
+                  style={{
+                    padding: "10px 24px",
+                    background: "#fff",
+                    color: "#000",
+                    border: "1px solid #eee",
+                    borderRadius: "20px",
+                    fontSize: "13px",
+                    fontWeight: "700"
+                  }}
+                >
+                  RESET
+                </button>
+              </div>
+            </div>
+
             <div style={{ display: "flex", gap: "8px", marginBottom: "24px" }}>
               {["weekday", "weekend"].map(k => (
                 <button 
@@ -258,10 +401,66 @@ export default function App() {
           </div>
         )}
 
+        {tab === "coach" && (
+          <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "12px", marginBottom: "20px" }}>
+              {messages.map((m, i) => (
+                <div key={i} style={{ 
+                  alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                  maxWidth: "80%",
+                  padding: "12px 16px",
+                  borderRadius: "12px",
+                  background: m.role === "user" ? "#000" : "#f5f5f5",
+                  color: m.role === "user" ? "#fff" : "#000",
+                  fontSize: "14px",
+                  lineHeight: "1.5"
+                }}>
+                  {m.text}
+                </div>
+              ))}
+              {loading && <div style={{ fontSize: "12px", color: "#aaa" }}>Coach is thinking...</div>}
+              <div ref={chatEndRef} />
+            </div>
+            <div style={{ display: "flex", gap: "8px", position: "sticky", bottom: 0, background: "#fff", padding: "12px 0" }}>
+              <input 
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleChat()}
+                placeholder="Ask for advice..."
+                style={{
+                  flex: 1,
+                  padding: "12px 16px",
+                  border: "1px solid #eee",
+                  borderRadius: "24px",
+                  fontSize: "14px",
+                  outline: "none"
+                }}
+              />
+              <button 
+                onClick={handleChat}
+                style={{
+                  width: "44px",
+                  height: "44px",
+                  borderRadius: "50%",
+                  background: "#000",
+                  color: "#fff",
+                  border: "none",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center"
+                }}
+              >
+                ↑
+              </button>
+            </div>
+          </div>
+        )}
+
       </main>
 
-      {/* FOOTER / PWA INSTALL HINT */}
-      <footer style={{ padding: "40px 20px", textAlign: "center", color: "#ccc", fontSize: "11px" }}>
+      {/* FOOTER */}
+      <footer style={{ padding: "20px", textAlign: "center", color: "#ccc", fontSize: "11px", borderTop: "1px solid #eee" }}>
         <p>© 2026 Focus Override · Minimalist PWA</p>
       </footer>
     </div>
