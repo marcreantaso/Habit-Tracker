@@ -1,0 +1,55 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "description": "User email" },
+        "displayName": { "type": "string", "description": "User display name" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Account creation time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "HabitTrack": {
+      "title": "HabitTrack",
+      "description": "Daily habit tracking data",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Owner UID" },
+        "day": { "type": "string", "description": "Day of the week (MON, TUE, etc.)" },
+        "habit": { "type": "string", "description": "Name of the habit" },
+        "completed": { "type": "boolean", "description": "Whether the habit was completed" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update time" }
+      },
+      "required": ["uid", "day", "habit", "completed"]
+    },
+    "FocusSession": {
+      "title": "FocusSession",
+      "description": "Completed focus timer sessions",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Owner UID" },
+        "goal": { "type": "string", "description": "The focus goal for the session" },
+        "duration": { "type": "number", "description": "Duration in seconds" },
+        "completedAt": { "type": "string", "format": "date-time", "description": "When the session finished" }
+      },
+      "required": ["uid", "duration", "completedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/users/{uid}/habits/{habitId}": {
+      "schema": "HabitTrack",
+      "description": "User habit tracking records"
+    },
+    "/users/{uid}/sessions/{sessionId}": {
+      "schema": "FocusSession",
+      "description": "User focus sessions"
+    }
+  }
+}

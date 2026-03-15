@@ -1,0 +1,110 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: /users/{uid}
+    // Fields:
+    //   - uid: string (required) - Firebase Auth UID
+    //   - email: string (required) - User email
+    //   - displayName: string (optional) - User display name
+    //   - createdAt: timestamp (optional) - Account creation time
+    //
+    // Collection: /users/{uid}/habits/{habitId}
+    // Fields:
+    //   - uid: string (required) - Owner UID
+    //   - day: string (required) - Day of the week (MON, TUE, etc.)
+    //   - habit: string (required) - Name of the habit
+    //   - completed: bool (required) - Whether the habit was completed
+    //   - updatedAt: timestamp (optional) - Last update time
+    //
+    // Collection: /users/{uid}/sessions/{sessionId}
+    // Fields:
+    //   - uid: string (required) - Owner UID
+    //   - goal: string (optional) - The focus goal for the session
+    //   - duration: number (required) - Duration in seconds
+    //   - completedAt: timestamp (required) - When the session finished
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "reantasomarcgian@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasOnly(['uid', 'email', 'displayName', 'createdAt', 'role']) &&
+             data.uid is string && data.uid.size() > 0 &&
+             data.email is string && isValidEmail(data.email) &&
+             (data.role == 'user' || data.role == 'admin');
+    }
+
+    function isValidHabit(data) {
+      return data.keys().hasOnly(['uid', 'day', 'habit', 'completed', 'updatedAt']) &&
+             data.uid == request.auth.uid &&
+             data.day in ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'] &&
+             data.habit is string && data.habit.size() > 0 && data.habit.size() < 100 &&
+             data.completed is bool;
+    }
+
+    function isValidSession(data) {
+      return data.keys().hasOnly(['uid', 'goal', 'duration', 'completedAt']) &&
+             data.uid == request.auth.uid &&
+             data.duration is number && data.duration >= 0 &&
+             data.completedAt is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && 
+                      (isOwner(userId) && request.resource.data.role == 'user' || isAdmin());
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && 
+                      (isOwner(userId) && request.resource.data.role == resource.data.role || isAdmin());
+
+      match /habits/{habitId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update: if isOwner(userId) && isValidHabit(request.resource.data);
+        allow delete: if isOwner(userId);
+      }
+
+      match /sessions/{sessionId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidSession(request.resource.data);
+        allow update: if isOwner(userId) && isValidSession(request.resource.data);
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    match /{path=**}/habits/{habitId} {
+      allow list: if isAdmin();
+    }
+    
+    match /{path=**}/sessions/{sessionId} {
+      allow list: if isAdmin();
+    }
+  }
+}

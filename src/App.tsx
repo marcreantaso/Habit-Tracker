@@ -3,8 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, createContext, useContext, ReactNode } from "react";
 import { GoogleGenAI } from "@google/genai";
+import { 
+  auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged,
+  doc, setDoc, getDoc, collection, query, where, onSnapshot, addDoc, serverTimestamp,
+  handleFirestoreError, OperationType
+} from "./firebase";
+import { User } from "firebase/auth";
 
 const techniques = [
   { rank: 1, name: "Deep Work Blocks", tagline: "90-min focus", effectiveness: 97, description: "Undivided work sessions. No distractions. One task only.", howTo: "Set a timer for 90 minutes. Work on one task. Do not stop until the timer ends.", scienceBit: "Ultradian rhythms: brain focus cycles.", color: "#000" },
@@ -49,14 +55,80 @@ const DAYS = ["MON","TUE","WED","THU","FRI","SAT","SUN"];
 const HABITS_TRACK = ["Deep Work I", "Deep Work II", "Phone Away", "No Social", "One Goal", "Learning", "Debrief"];
 
 const TC: Record<string, { color: string; bg: string }> = {
-  ritual: { color: "#000", bg: "#f0f0f0" },
-  work:   { color: "#fff", bg: "#000" },
-  break:  { color: "#666", bg: "#f9f9f9" },
-  learn:  { color: "#000", bg: "#e8e8e8" },
-  end:    { color: "#999", bg: "#fff" },
+  ritual: { color: "#fff", bg: "#1a1a1a" },
+  work:   { color: "#000", bg: "#fff" },
+  break:  { color: "#888", bg: "#111" },
+  learn:  { color: "#fff", bg: "#222" },
+  end:    { color: "#444", bg: "#000" },
 };
 
-export default function App() {
+// --- AUTH CONTEXT ---
+const AuthContext = createContext<{ user: User | null; loading: boolean }>({ user: null, loading: true });
+
+function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    return onAuthStateChanged(auth, async (u) => {
+      if (u) {
+        // Ensure user document exists
+        const userRef = doc(db, "users", u.uid);
+        try {
+          const userSnap = await getDoc(userRef);
+          if (!userSnap.exists()) {
+            await setDoc(userRef, {
+              uid: u.uid,
+              email: u.email,
+              displayName: u.displayName,
+              createdAt: serverTimestamp(),
+              role: 'user'
+            });
+          }
+        } catch (error) {
+          console.error("Error setting up user profile:", error);
+        }
+      }
+      setUser(u);
+      setLoading(false);
+    });
+  }, []);
+
+  return <AuthContext.Provider value={{ user, loading }}>{children}</AuthContext.Provider>;
+}
+
+// --- ERROR BOUNDARY ---
+function ErrorBoundary({ children }: { children: ReactNode }) {
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleError = (e: ErrorEvent) => {
+      try {
+        const parsed = JSON.parse(e.message);
+        if (parsed.error) setError(parsed.error);
+      } catch {
+        setError(e.message);
+      }
+    };
+    window.addEventListener("error", handleError);
+    return () => window.removeEventListener("error", handleError);
+  }, []);
+
+  if (error) {
+    return (
+      <div style={{ padding: "40px", textAlign: "center", background: "#000", color: "#fff", height: "100vh" }}>
+        <h2 style={{ fontSize: "20px", marginBottom: "16px" }}>Something went wrong</h2>
+        <p style={{ color: "#666", fontSize: "14px", marginBottom: "24px" }}>{error}</p>
+        <button onClick={() => window.location.reload()} style={{ padding: "12px 24px", background: "#fff", color: "#000", border: "none", borderRadius: "24px" }}>Reload</button>
+      </div>
+    );
+  }
+  return <>{children}</>;
+}
+
+// --- MAIN APP COMPONENT ---
+function FocusApp() {
+  const { user } = useContext(AuthContext);
   const [tab, setTab] = useState("techniques");
   const [sched, setSched] = useState("weekday");
   const [exp, setExp] = useState<number | null>(null);
@@ -68,7 +140,7 @@ export default function App() {
 
   // Timer State
   const [timerActive, setTimerActive] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(90 * 60); // 90 minutes default
+  const [timeLeft, setTimeLeft] = useState(90 * 60);
   const [totalTime, setTotalTime] = useState(90 * 60);
   const [focusGoal, setFocusGoal] = useState("");
 
@@ -77,8 +149,24 @@ export default function App() {
     { role: "ai", text: "I am your Focus Coach. Need a custom recommendation or help with a block?" }
   ]);
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loadingChat, setLoadingChat] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Sync Habits from Firestore
+  useEffect(() => {
+    if (!user) return;
+    const habitsRef = collection(db, "users", user.uid, "habits");
+    return onSnapshot(habitsRef, (snapshot) => {
+      const newChecks = { ...checks };
+      snapshot.docs.forEach(doc => {
+        const data = doc.data();
+        if (newChecks[data.day]) {
+          newChecks[data.day][data.habit] = data.completed;
+        }
+      });
+      setChecks({ ...newChecks });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/habits`));
+  }, [user]);
 
   useEffect(() => {
     let interval: any;
@@ -86,7 +174,7 @@ export default function App() {
       interval = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
     } else if (timeLeft === 0) {
       setTimerActive(false);
-      alert("Focus session complete.");
+      handleSessionComplete();
     }
     return () => clearInterval(interval);
   }, [timerActive, timeLeft]);
@@ -95,7 +183,38 @@ export default function App() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const toggle = (d: string, h: string) => setChecks(p => ({ ...p, [d]: { ...p[d], [h]: !p[d][h] } }));
+  const handleSessionComplete = async () => {
+    if (!user) return;
+    try {
+      await addDoc(collection(db, "users", user.uid, "sessions"), {
+        uid: user.uid,
+        goal: focusGoal,
+        duration: totalTime,
+        completedAt: serverTimestamp()
+      });
+      alert("Focus session complete and saved.");
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `users/${user.uid}/sessions`);
+    }
+  };
+
+  const toggle = async (d: string, h: string) => {
+    if (!user) return;
+    const completed = !checks[d][h];
+    const habitId = `${d}_${h.replace(/\s+/g, '_')}`;
+    try {
+      await setDoc(doc(db, "users", user.uid, "habits", habitId), {
+        uid: user.uid,
+        day: d,
+        habit: h,
+        completed,
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/habits/${habitId}`);
+    }
+  };
+
   const score = (d: string) => Math.round(Object.values(checks[d]).filter(Boolean).length / HABITS_TRACK.length * 100);
 
   const formatTime = (seconds: number) => {
@@ -105,11 +224,11 @@ export default function App() {
   };
 
   const handleChat = async () => {
-    if (!input.trim() || loading) return;
+    if (!input.trim() || loadingChat) return;
     const userMsg = input.trim();
     setInput("");
     setMessages(prev => [...prev, { role: "user", text: userMsg }]);
-    setLoading(true);
+    setLoadingChat(true);
 
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -124,7 +243,7 @@ export default function App() {
     } catch (e) {
       setMessages(prev => [...prev, { role: "ai", text: "Error connecting to coach. Trust the system." }]);
     } finally {
-      setLoading(false);
+      setLoadingChat(false);
     }
   };
 
@@ -136,11 +255,26 @@ export default function App() {
     { id: "coach",      label: "COACH" },
   ];
 
+  if (!user) {
+    return (
+      <div style={{ height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#000", color: "#fff", padding: "20px" }}>
+        <h1 style={{ fontSize: "32px", fontWeight: "800", marginBottom: "8px" }}>Focus Override</h1>
+        <p style={{ color: "#666", marginBottom: "40px", textAlign: "center" }}>Minimalist Productivity System</p>
+        <button 
+          onClick={() => signInWithPopup(auth, googleProvider)}
+          style={{ padding: "16px 32px", background: "#fff", color: "#000", border: "none", borderRadius: "32px", fontWeight: "700", fontSize: "14px", cursor: "pointer" }}
+        >
+          Sign in with Google
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div style={{ 
       minHeight: "100vh", 
-      background: "#fff", 
-      color: "#000", 
+      background: "#000", 
+      color: "#fff", 
       fontFamily: "system-ui, -apple-system, sans-serif", 
       padding: "env(safe-area-inset-top) 0 env(safe-area-inset-bottom) 0",
       display: "flex",
@@ -148,13 +282,16 @@ export default function App() {
     }}>
       
       {/* HEADER */}
-      <header style={{ padding: "40px 20px 20px", borderBottom: "1px solid #eee" }}>
-        <h1 style={{ fontSize: "24px", fontWeight: "700", letterSpacing: "-0.5px", margin: 0 }}>Focus Override</h1>
-        <p style={{ fontSize: "12px", color: "#666", marginTop: "4px", textTransform: "uppercase", letterSpacing: "1px" }}>Minimalist Productivity System</p>
+      <header style={{ padding: "40px 20px 20px", borderBottom: "1px solid #1a1a1a", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <h1 style={{ fontSize: "24px", fontWeight: "700", letterSpacing: "-0.5px", margin: 0 }}>Focus Override</h1>
+          <p style={{ fontSize: "12px", color: "#666", marginTop: "4px", textTransform: "uppercase", letterSpacing: "1px" }}>Minimalist Productivity System</p>
+        </div>
+        <button onClick={() => signOut(auth)} style={{ background: "none", border: "none", color: "#444", fontSize: "11px", fontWeight: "600", textTransform: "uppercase" }}>Logout</button>
       </header>
 
       {/* TABS */}
-      <nav style={{ display: "flex", borderBottom: "1px solid #eee", background: "#fff", position: "sticky", top: 0, zIndex: 10 }}>
+      <nav style={{ display: "flex", borderBottom: "1px solid #1a1a1a", background: "#000", position: "sticky", top: 0, zIndex: 10 }}>
         {TABS.map(t => (
           <button 
             key={t.id} 
@@ -167,8 +304,8 @@ export default function App() {
               fontSize: "11px",
               fontWeight: "600",
               letterSpacing: "1px",
-              color: tab === t.id ? "#000" : "#aaa",
-              borderBottom: tab === t.id ? "2px solid #000" : "2px solid transparent",
+              color: tab === t.id ? "#fff" : "#444",
+              borderBottom: tab === t.id ? "2px solid #fff" : "2px solid transparent",
               transition: "all 0.2s"
             }}
           >
@@ -187,23 +324,23 @@ export default function App() {
                 onClick={() => setExp(exp === t.rank ? null : t.rank)}
                 style={{
                   padding: "20px",
-                  border: "1px solid #eee",
+                  border: "1px solid #1a1a1a",
                   borderRadius: "8px",
                   cursor: "pointer",
-                  background: exp === t.rank ? "#fafafa" : "#fff"
+                  background: exp === t.rank ? "#0a0a0a" : "#000"
                 }}
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div>
                     <h3 style={{ fontSize: "16px", fontWeight: "600", margin: 0 }}>{t.name}</h3>
-                    <p style={{ fontSize: "12px", color: "#888", margin: "2px 0 0" }}>{t.tagline}</p>
+                    <p style={{ fontSize: "12px", color: "#666", margin: "2px 0 0" }}>{t.tagline}</p>
                   </div>
                   <span style={{ fontSize: "14px", fontWeight: "700" }}>{t.effectiveness}%</span>
                 </div>
                 {exp === t.rank && (
-                  <div style={{ marginTop: "16px", paddingTop: "16px", borderTop: "1px solid #eee" }}>
-                    <p style={{ fontSize: "14px", lineHeight: "1.6", color: "#444" }}>{t.description}</p>
-                    <div style={{ marginTop: "12px", padding: "12px", background: "#000", color: "#fff", borderRadius: "4px" }}>
+                  <div style={{ marginTop: "16px", paddingTop: "16px", borderTop: "1px solid #1a1a1a" }}>
+                    <p style={{ fontSize: "14px", lineHeight: "1.6", color: "#aaa" }}>{t.description}</p>
+                    <div style={{ marginTop: "12px", padding: "12px", background: "#fff", color: "#000", borderRadius: "4px" }}>
                       <p style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", marginBottom: "4px" }}>How to</p>
                       <p style={{ fontSize: "13px", margin: 0 }}>{t.howTo}</p>
                     </div>
@@ -218,7 +355,7 @@ export default function App() {
           <div>
             {/* FOCUS GOAL */}
             <div style={{ marginBottom: "24px" }}>
-              <p style={{ fontSize: "10px", fontWeight: "700", color: "#aaa", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>Current Objective</p>
+              <p style={{ fontSize: "10px", fontWeight: "700", color: "#444", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>Current Objective</p>
               <input 
                 value={focusGoal}
                 onChange={(e) => setFocusGoal(e.target.value)}
@@ -229,37 +366,23 @@ export default function App() {
                   fontSize: "18px",
                   fontWeight: "600",
                   border: "none",
-                  borderBottom: "2px solid #eee",
+                  borderBottom: "2px solid #1a1a1a",
                   outline: "none",
                   background: "transparent",
+                  color: "#fff",
                   transition: "border-color 0.2s"
                 }}
-                onFocus={(e) => e.target.style.borderColor = "#000"}
-                onBlur={(e) => e.target.style.borderColor = "#eee"}
+                onFocus={(e) => e.target.style.borderColor = "#fff"}
+                onBlur={(e) => e.target.style.borderColor = "#1a1a1a"}
               />
             </div>
 
             {/* TIMER SECTION */}
-            <div style={{ marginBottom: "32px", padding: "24px", border: "1px solid #000", borderRadius: "12px", textAlign: "center", position: "relative", overflow: "hidden" }}>
+            <div style={{ marginBottom: "32px", padding: "24px", border: "1px solid #fff", borderRadius: "12px", textAlign: "center", position: "relative", overflow: "hidden" }}>
               {/* Progress Bar Background */}
-              <div style={{ 
-                position: "absolute", 
-                bottom: 0, 
-                left: 0, 
-                height: "4px", 
-                background: "#eee", 
-                width: "100%" 
-              }} />
+              <div style={{ position: "absolute", bottom: 0, left: 0, height: "4px", background: "#1a1a1a", width: "100%" }} />
               {/* Progress Bar Fill */}
-              <div style={{ 
-                position: "absolute", 
-                bottom: 0, 
-                left: 0, 
-                height: "4px", 
-                background: "#000", 
-                width: `${((totalTime - timeLeft) / totalTime) * 100}%`,
-                transition: "width 1s linear"
-              }} />
+              <div style={{ position: "absolute", bottom: 0, left: 0, height: "4px", background: "#fff", width: `${((totalTime - timeLeft) / totalTime) * 100}%`, transition: "width 1s linear" }} />
 
               <div style={{ fontSize: "48px", fontWeight: "800", fontFamily: "monospace", letterSpacing: "-2px", marginBottom: "12px" }}>
                 {formatTime(timeLeft)}
@@ -267,29 +390,13 @@ export default function App() {
               <div style={{ display: "flex", gap: "8px", justifyContent: "center" }}>
                 <button 
                   onClick={() => setTimerActive(!timerActive)}
-                  style={{
-                    padding: "10px 24px",
-                    background: "#000",
-                    color: "#fff",
-                    border: "none",
-                    borderRadius: "20px",
-                    fontSize: "13px",
-                    fontWeight: "700"
-                  }}
+                  style={{ padding: "10px 24px", background: "#fff", color: "#000", border: "none", borderRadius: "20px", fontSize: "13px", fontWeight: "700" }}
                 >
                   {timerActive ? "PAUSE" : "START BLOCK"}
                 </button>
                 <button 
                   onClick={() => { setTimerActive(false); setTimeLeft(90 * 60); setTotalTime(90 * 60); }}
-                  style={{
-                    padding: "10px 24px",
-                    background: "#fff",
-                    color: "#000",
-                    border: "1px solid #eee",
-                    borderRadius: "20px",
-                    fontSize: "13px",
-                    fontWeight: "700"
-                  }}
+                  style={{ padding: "10px 24px", background: "#000", color: "#fff", border: "1px solid #1a1a1a", borderRadius: "20px", fontSize: "13px", fontWeight: "700" }}
                 >
                   RESET
                 </button>
@@ -301,16 +408,7 @@ export default function App() {
                 <button 
                   key={k} 
                   onClick={() => setSched(k)}
-                  style={{
-                    padding: "8px 16px",
-                    borderRadius: "20px",
-                    border: "1px solid #eee",
-                    background: sched === k ? "#000" : "#fff",
-                    color: sched === k ? "#fff" : "#000",
-                    fontSize: "12px",
-                    fontWeight: "600",
-                    textTransform: "capitalize"
-                  }}
+                  style={{ padding: "8px 16px", borderRadius: "20px", border: "1px solid #1a1a1a", background: sched === k ? "#fff" : "#000", color: sched === k ? "#000" : "#fff", fontSize: "12px", fontWeight: "600", textTransform: "capitalize" }}
                 >
                   {k}
                 </button>
@@ -318,21 +416,13 @@ export default function App() {
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               {(sched === "weekday" ? weekdayBlocks : weekendBlocks).map((b, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", padding: "16px", border: "1px solid #eee", borderRadius: "8px" }}>
+                <div key={i} style={{ display: "flex", alignItems: "center", padding: "16px", border: "1px solid #1a1a1a", borderRadius: "8px" }}>
                   <div style={{ width: "60px", fontSize: "13px", fontWeight: "700" }}>{b.time}</div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: "14px", fontWeight: "600" }}>{b.label}</div>
-                    <div style={{ fontSize: "12px", color: "#888" }}>{b.desc}</div>
+                    <div style={{ fontSize: "12px", color: "#666" }}>{b.desc}</div>
                   </div>
-                  <div style={{ 
-                    fontSize: "10px", 
-                    padding: "4px 8px", 
-                    borderRadius: "4px", 
-                    background: TC[b.type].bg, 
-                    color: TC[b.type].color,
-                    fontWeight: "700",
-                    textTransform: "uppercase"
-                  }}>
+                  <div style={{ fontSize: "10px", padding: "4px 8px", borderRadius: "4px", background: TC[b.type].bg, color: TC[b.type].color, fontWeight: "700", textTransform: "uppercase" }}>
                     {b.type}
                   </div>
                 </div>
@@ -344,7 +434,7 @@ export default function App() {
         {tab === "habits" && (
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
             {habits.map((h, i) => (
-              <div key={i} style={{ display: "flex", gap: "16px", padding: "20px", border: "1px solid #eee", borderRadius: "8px" }}>
+              <div key={i} style={{ display: "flex", gap: "16px", padding: "20px", border: "1px solid #1a1a1a", borderRadius: "8px" }}>
                 <span style={{ fontSize: "24px" }}>{h.icon}</span>
                 <div>
                   <h3 style={{ fontSize: "15px", fontWeight: "600", margin: 0 }}>{h.habit}</h3>
@@ -361,35 +451,23 @@ export default function App() {
               {DAYS.map(d => {
                 const s = score(d);
                 return (
-                  <div key={d} style={{ flex: 1, minWidth: "50px", textAlign: "center", padding: "12px 0", border: "1px solid #eee", borderRadius: "8px" }}>
-                    <div style={{ fontSize: "10px", color: "#888", marginBottom: "4px" }}>{d}</div>
+                  <div key={d} style={{ flex: 1, minWidth: "50px", textAlign: "center", padding: "12px 0", border: "1px solid #1a1a1a", borderRadius: "8px" }}>
+                    <div style={{ fontSize: "10px", color: "#444", marginBottom: "4px" }}>{d}</div>
                     <div style={{ fontSize: "14px", fontWeight: "700" }}>{s}%</div>
                   </div>
                 );
               })}
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "1px", background: "#eee", border: "1px solid #eee", borderRadius: "8px", overflow: "hidden" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "1px", background: "#1a1a1a", border: "1px solid #1a1a1a", borderRadius: "8px", overflow: "hidden" }}>
               {HABITS_TRACK.map((h, i) => (
-                <div key={i} style={{ background: "#fff", padding: "16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: "14px", color: "#444" }}>{h}</span>
+                <div key={i} style={{ background: "#000", padding: "16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: "14px", color: "#aaa" }}>{h}</span>
                   <div style={{ display: "flex", gap: "4px" }}>
                     {DAYS.map(d => (
                       <div 
                         key={d} 
                         onClick={() => toggle(d, h)}
-                        style={{
-                          width: "24px",
-                          height: "24px",
-                          borderRadius: "4px",
-                          border: "1px solid #eee",
-                          background: checks[d][h] ? "#000" : "#fff",
-                          cursor: "pointer",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          color: "#fff",
-                          fontSize: "12px"
-                        }}
+                        style={{ width: "24px", height: "24px", borderRadius: "4px", border: "1px solid #1a1a1a", background: checks[d][h] ? "#fff" : "#000", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#000", fontSize: "12px" }}
                       >
                         {checks[d][h] ? "✓" : ""}
                       </div>
@@ -405,54 +483,16 @@ export default function App() {
           <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
             <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "12px", marginBottom: "20px" }}>
               {messages.map((m, i) => (
-                <div key={i} style={{ 
-                  alignSelf: m.role === "user" ? "flex-end" : "flex-start",
-                  maxWidth: "80%",
-                  padding: "12px 16px",
-                  borderRadius: "12px",
-                  background: m.role === "user" ? "#000" : "#f5f5f5",
-                  color: m.role === "user" ? "#fff" : "#000",
-                  fontSize: "14px",
-                  lineHeight: "1.5"
-                }}>
+                <div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "80%", padding: "12px 16px", borderRadius: "12px", background: m.role === "user" ? "#fff" : "#1a1a1a", color: m.role === "user" ? "#000" : "#fff", fontSize: "14px", lineHeight: "1.5" }}>
                   {m.text}
                 </div>
               ))}
-              {loading && <div style={{ fontSize: "12px", color: "#aaa" }}>Coach is thinking...</div>}
+              {loadingChat && <div style={{ fontSize: "12px", color: "#444" }}>Coach is thinking...</div>}
               <div ref={chatEndRef} />
             </div>
-            <div style={{ display: "flex", gap: "8px", position: "sticky", bottom: 0, background: "#fff", padding: "12px 0" }}>
-              <input 
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleChat()}
-                placeholder="Ask for advice..."
-                style={{
-                  flex: 1,
-                  padding: "12px 16px",
-                  border: "1px solid #eee",
-                  borderRadius: "24px",
-                  fontSize: "14px",
-                  outline: "none"
-                }}
-              />
-              <button 
-                onClick={handleChat}
-                style={{
-                  width: "44px",
-                  height: "44px",
-                  borderRadius: "50%",
-                  background: "#000",
-                  color: "#fff",
-                  border: "none",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center"
-                }}
-              >
-                ↑
-              </button>
+            <div style={{ display: "flex", gap: "8px", position: "sticky", bottom: 0, background: "#000", padding: "12px 0" }}>
+              <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleChat()} placeholder="Ask for advice..." style={{ flex: 1, padding: "12px 16px", border: "1px solid #1a1a1a", borderRadius: "24px", fontSize: "14px", outline: "none", background: "#0a0a0a", color: "#fff" }} />
+              <button onClick={handleChat} style={{ width: "44px", height: "44px", borderRadius: "50%", background: "#fff", color: "#000", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>↑</button>
             </div>
           </div>
         )}
@@ -460,9 +500,19 @@ export default function App() {
       </main>
 
       {/* FOOTER */}
-      <footer style={{ padding: "20px", textAlign: "center", color: "#ccc", fontSize: "11px", borderTop: "1px solid #eee" }}>
+      <footer style={{ padding: "20px", textAlign: "center", color: "#222", fontSize: "11px", borderTop: "1px solid #1a1a1a" }}>
         <p>© 2026 Focus Override · Minimalist PWA</p>
       </footer>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <ErrorBoundary>
+        <FocusApp />
+      </ErrorBoundary>
+    </AuthProvider>
   );
 }
