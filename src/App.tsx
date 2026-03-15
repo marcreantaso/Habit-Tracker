@@ -8,7 +8,7 @@ import { GoogleGenAI } from "@google/genai";
 import { 
   auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged,
   createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  doc, setDoc, getDoc, collection, query, where, onSnapshot, addDoc, serverTimestamp,
+  doc, setDoc, getDoc, collection, onSnapshot, addDoc, serverTimestamp,
   handleFirestoreError, OperationType
 } from "./firebase";
 import { User } from "firebase/auth";
