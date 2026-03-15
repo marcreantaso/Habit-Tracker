@@ -3,10 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useRef, createContext, useContext, ReactNode } from "react";
+import { useState, useEffect, useRef, createContext, useContext, ReactNode, FormEvent } from "react";
 import { GoogleGenAI } from "@google/genai";
 import { 
   auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged,
+  createUserWithEmailAndPassword, signInWithEmailAndPassword,
   doc, setDoc, getDoc, collection, query, where, onSnapshot, addDoc, serverTimestamp,
   handleFirestoreError, OperationType
 } from "./firebase";
@@ -126,9 +127,103 @@ function ErrorBoundary({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+// --- LOGIN/SIGNUP COMPONENT ---
+function AuthScreen() {
+  const [isLogin, setIsLogin] = useState(true);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleAuth = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      if (isLogin) {
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        await createUserWithEmailAndPassword(auth, email, password);
+      }
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogle = async () => {
+    setError(null);
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  return (
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#000", color: "#fff", padding: "20px" }}>
+      <div style={{ width: "100%", maxWidth: "320px" }}>
+        <h1 style={{ fontSize: "32px", fontWeight: "800", marginBottom: "8px", textAlign: "center" }}>Focus Override</h1>
+        <p style={{ color: "#444", marginBottom: "40px", textAlign: "center", fontSize: "12px", textTransform: "uppercase", letterSpacing: "1px" }}>Minimalist Productivity System</p>
+        
+        <form onSubmit={handleAuth} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <input 
+            type="email" 
+            placeholder="Email" 
+            value={email} 
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            style={{ padding: "14px 20px", background: "#0a0a0a", border: "1px solid #1a1a1a", borderRadius: "12px", color: "#fff", outline: "none" }}
+          />
+          <input 
+            type="password" 
+            placeholder="Password" 
+            value={password} 
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            style={{ padding: "14px 20px", background: "#0a0a0a", border: "1px solid #1a1a1a", borderRadius: "12px", color: "#fff", outline: "none" }}
+          />
+          {error && <p style={{ color: "#ff4444", fontSize: "12px", margin: "4px 0" }}>{error}</p>}
+          <button 
+            type="submit" 
+            disabled={loading}
+            style={{ padding: "14px", background: "#fff", color: "#000", border: "none", borderRadius: "12px", fontWeight: "700", cursor: "pointer", marginTop: "8px" }}
+          >
+            {loading ? "..." : (isLogin ? "Login" : "Sign Up")}
+          </button>
+        </form>
+
+        <div style={{ margin: "24px 0", display: "flex", alignItems: "center", gap: "12px" }}>
+          <div style={{ flex: 1, height: "1px", background: "#1a1a1a" }} />
+          <span style={{ fontSize: "10px", color: "#444", textTransform: "uppercase" }}>or</span>
+          <div style={{ flex: 1, height: "1px", background: "#1a1a1a" }} />
+        </div>
+
+        <button 
+          onClick={handleGoogle}
+          style={{ width: "100%", padding: "14px", background: "transparent", color: "#fff", border: "1px solid #1a1a1a", borderRadius: "12px", fontWeight: "600", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px" }}
+        >
+          Continue with Google
+        </button>
+
+        <p style={{ marginTop: "32px", textAlign: "center", fontSize: "13px", color: "#666" }}>
+          {isLogin ? "New here?" : "Already have an account?"}{" "}
+          <button 
+            onClick={() => setIsLogin(!isLogin)}
+            style={{ background: "none", border: "none", color: "#fff", fontWeight: "600", cursor: "pointer", padding: 0 }}
+          >
+            {isLogin ? "Create account" : "Login"}
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // --- MAIN APP COMPONENT ---
 function FocusApp() {
-  const { user } = useContext(AuthContext);
+  const { user, loading } = useContext(AuthContext);
   const [tab, setTab] = useState("techniques");
   const [sched, setSched] = useState("weekday");
   const [exp, setExp] = useState<number | null>(null);
@@ -255,19 +350,10 @@ function FocusApp() {
     { id: "coach",      label: "COACH" },
   ];
 
+  if (loading) return <div style={{ height: "100vh", background: "#000" }} />;
+
   if (!user) {
-    return (
-      <div style={{ height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#000", color: "#fff", padding: "20px" }}>
-        <h1 style={{ fontSize: "32px", fontWeight: "800", marginBottom: "8px" }}>Focus Override</h1>
-        <p style={{ color: "#666", marginBottom: "40px", textAlign: "center" }}>Minimalist Productivity System</p>
-        <button 
-          onClick={() => signInWithPopup(auth, googleProvider)}
-          style={{ padding: "16px 32px", background: "#fff", color: "#000", border: "none", borderRadius: "32px", fontWeight: "700", fontSize: "14px", cursor: "pointer" }}
-        >
-          Sign in with Google
-        </button>
-      </div>
-    );
+    return <AuthScreen />;
   }
 
   return (
